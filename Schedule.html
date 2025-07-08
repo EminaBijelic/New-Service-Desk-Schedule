@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Service Desk Schedule</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.19.3/xlsx.full.min.js"></script>
+
+<style>
+  :root{--border:#666;--head-bg:#000;--head-fg:#fff;--emp-bg:#f4f4f4;--off-bg:#e0e0e0}
+  body{font-family:Arial,Helvetica,sans-serif;margin:20px}
+  h2,h3{margin:10px 0 6px}
+  label{margin-right:8px}
+  button{padding:6px 12px;margin-right:4px;cursor:pointer}
+  table{border-collapse:collapse;width:100%;table-layout:fixed;margin-bottom:28px}
+  th,td{border:1px solid var(--border);padding:4px 2px;font-size:13px;text-align:center;word-break:break-word}
+  thead th{background:var(--head-bg);color:var(--head-fg)}
+  .emp-name{background:var(--emp-bg);text-align:left;font-weight:700}
+  .emp-title{background:var(--emp-bg);text-align:left;font-style:italic}
+  td select{width:100%;border:none;background:transparent;font:inherit;height:100%;text-align:center;cursor:pointer}
+  #legend th{background:#202124;color:#fff}
+</style>
+</head>
+<body>
+<h2>Service Desk Schedule</h2>
+<div id="controls">
+  <label>Start <input type="date" id="sd"></label>
+  <label>End <input type="date" id="ed"></label>
+  <button id="run">Generate</button>
+  <button id="xlsx" disabled>Export Excel</button>
+</div>
+
+<div id="wrap"></div>
+
+<h3>Key / Legend</h3>
+<table id="legend"><tr><th style="width:115px">Code</th><th>Description</th></tr></table>
+
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+
+/* ---------- shift codes & colours ---------- */
+const shifts={
+  TW:'TeleWork', S1:'Shift 1', 'S1.5':'Shift 1.5', S2:'Shift 2', S3:'Shift 3',
+  Early:'Early Departure', PTO:'Personal Time Off', Late:'Late Arrival', Res:'Reservist Drill',
+  'Watch 1':'Lead Watch 1','Watch 2':'Lead Watch 2','Watch 3':'Lead Watch 3',
+  H:'Holiday', CH:'City Hall','O&F':'Onboarding & Foundations', FT:'Floor Training',
+  ExLv:'Extended Leave', NCNS:'No Call No Show', OFF:'Scheduled Day Off'
+};
+const bg={TW:'#2e7d32',S1:'#fff','S1.5':'#fff',S2:'#fff',S3:'#fff',H:'#ff0000',OFF:'var(--off-bg)',
+PTO:'#ffff00',Late:'#000',Early:'#9e9e9e',Res:'#ef6c00',CH:'#6a1b9a',
+'Watch 1':'#bbdefb','Watch 2':'#bbdefb','Watch 3':'#bbdefb',
+ExLv:'#1565c0',NCNS:'#9e9e9e','O&F':'#fff',FT:'#a5d6a7'};
+const fg={TW:'#fff',S1:'#d32f2f','S1.5':'#bf360c',S2:'#fbc02d',S3:'#00796b',
+H:'#fff',PTO:'#d50000',Late:'#fff',OFF:'#000'};
+
+/* legend */
+(function(){const tbl=legend;Object.entries(shifts).forEach(([c,d])=>{
+  const r=tbl.insertRow();r.insertCell().textContent=c;
+  r.cells[0].style.cssText=`background:${bg[c]};color:${fg[c]}`;
+  r.insertCell().textContent=d;
+});})();
+  
+
+/* ---------- WEEKLY OVERRIDES (0 = Sun, 1 = Mon, … 6 = Sat) ---------- */
+const weekdayOverrides = {
+  /* Watch 1 */
+  'Nappier, Michael'   : { 2:'Watch 1', 6:'Watch 1' },     // Tue & Sat
+  'Mosley, Aaron'      : { 0:'Watch 1' },                  // Sun
+  'Domahowski, Cody'   : { 3:'Watch 1' },                  // Wed   (spelling matches employees array)
+  'Masiulis, Aidas'    : { 1:'Watch 1', 4:'Watch 1' },     // Mon & Thu
+  'Owens, Emmanuel'    : { 5:'Watch 1' },                  // Fri
+
+  /* Watch 2 */
+  'Nappier, Amanda'    : { 2:'Watch 2', 4:'Watch 2' },     // Tue & Thu
+  'Rowe, Greg'         : { 1:'Watch 2', 3:'Watch 2' },     // Mon & Wed
+  'Ruiz, Javier'       : { 0:'Watch 2', 6:'Watch 2' },     // Sun & Sat
+
+  /* Watch 3 and Thursday Shift 3 */
+  'Jones, Michael'     : { 1:'Watch 3', 4:'Watch 3' },     // Mon & Thu
+  'Hosier, Brandie'    : { 0:'Watch 3', 2:'Watch 3', 3:'Watch 3', 4:'S3' }, // Sun Tue Wed  |  Thu = S3
+  'Stanley, Raymond'   : { 5:'Watch 3', 6:'Watch 3', 4:'S3' },              // Fri Sat      |  Thu = S3
+  /* Weekday Shifts */
+  'Roever, Troy' : {0: 'S1' }, //Every Sunday S1
+  'Milchak, Mark'  : {1: 'S1' },  //Every Monday S1
+  'Damon, Jackson' : {1: 'S1' },
+  'Wilcox, Micah' : {1: 'S1' }, 
+  
+  'Johnson, Rhiianon' : {2: 'S1'}, //Every Tuesday S1
+  'Harksock, Ronald' : {4: 'S1' }, //Every Thursday S1
+  'Havis, Cascadora' : {4: 'S1' },
+  'Thode, Paul' : {4: 'S3' }, //Every Thursday S3
+  'Boomhower, Alex' : {4: 'S3' }, 
+  'Foresman, Jason' : {4: 'S3' },
+  'Sheldon, Josh' : {4: 'S3' },
+  'Sheltz, Cody' : {4: 'S3' },
+  /* ExLv every weekday (Mon–Fri) */
+'Price, Deja' : { 1:'ExLv', 2:'ExLv', 3:'ExLv', 4:'ExLv', 5:'ExLv' },
+'Null, Erik'  : { 1:'ExLv', 2:'ExLv', 3:'ExLv', 4:'ExLv', 5:'ExLv' },
+};
+
+
+/* ---------- one-off date overrides ---------- */
+const dateOverrides={};
+
+/* ---------- employee roster ---------- */
+const employees=[
+// Support Team
+{group:'Support Team',week:'MF',name:'Waaso, Cassie',title:'Operations Manager'},
+{group:'Support Team',week:'MF',name:'Rigsby, Angelique',title:'Training'},
+{group:'Support Team',week:'MF',name:'Omerovic, Emina',title:'Workforce Management'},
+{group:'Support Team',week:'MF',name:'Eggert, Kevin',title:'KM'},
+{group:'Support Team',week:'MF',name:'Stecher, Paul',title:'Telecom/Desktop'},
+{group:'Support Team',week:'MF',name:'Tompkins, Patrick',title:'Avaya Administrator'},
+// Command & Control
+{group:'Command & Control',week:'MF',name:'Shelton, Dawon',title:'Command & Control Manager'},
+{group:'Command & Control',week:'MF',name:'Peterson, Tom',title:'Data & Analytics'},
+{group:'Command & Control',week:'MF',name:'Ducharme, Alayna',title:'QA'},
+{group:'Command & Control',week:'MF',name:'Howard, Sandra',title:'SRM Ticket Management'},
+// Supervisors
+{group:'Supervisors',week:'MF',name:'Milchak, Mark',title:'Response Supervisor'},
+{group:'Supervisors',week:'MF',name:'Mohr, Keith',title:'Remote Serv Admins Supervisor'},
+{group:'Supervisors',week:'MF',name:'Null, Erik',title:'System Admins Supervisor'},
+{group:'Supervisors',week:'MF',name:'Rice, Gerald',title:'User Admins Supervisor'},
+{group:'Supervisors',week:'MF',name:'Davis, Terri',title:'ET Supervisor'},
+{group:'Supervisors',week:'MF',name:'Al-Hameed, Prince',title:'Priority Service Supervisor'},
+// Shift Leads
+{group:'Shift Leads',week:'TS',name:'Nappier, Michael',title:'Response Shift Lead'},
+{group:'Shift Leads',week:'SuT',name:'Mosley, Aaron',title:'Response Shift Lead'},
+{group:'Shift Leads',week:'MF',name:'Domahowski, Cody',title:'System Admins Shift Lead'},
+{group:'Shift Leads',week:'MF',name:'Masiulis, Aidas',title:'Remote Serv Admins Shift Lead'},
+{group:'Shift Leads',week:'MF',name:'Owens, Emmanuel',title:'User Admins Shift Lead'},
+{group:'Shift Leads',week:'MF',name:'Nappier, Amanda',title:'User Admin Shift Lead / 2nd'},
+{group:'Shift Leads',week:'SuT',name:'Rowe, Greg',title:'Remote Serv Shift Lead / 2nd'},
+{group:'Shift Leads',week:'TM',name:'Ruiz, Javier',title:'Remote Serv Shift Lead / 2nd'},
+{group:'Shift Leads',week:'TM',name:'Jones, Michael',title:'User Admin Shift Lead / 3rd'},
+{group:'Shift Leads',week:'SuT',name:'Hosier, Brandie',title:'Response Shift Lead / 3rd'},
+{group:'Shift Leads',week:'TS',name:'Stanley, Raymond',title:'Sys Admin Shift Lead / 3rd'},
+// Shift 1
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Ashley, Robert',title:'ET'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'TS',name:'Grant, Kathi',title:'ET'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'SuT',name:'Thode, Paul',title:'ET'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Brust, Matthew',title:'Remote Serv Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Hennecke, Ryan',title:'T2Remote (M-F)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Perry, Jonathon',title:'Remote Serv Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Phillips, Kenia',title:'Remote Serv Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Steed, Ronald',title:'Remote Serv Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'TS',name:'Curtis, Philip',title:'Remote Serv Admin (Surge)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Sanchez, Pedro',title:'Remote Serv Admin (Surge)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Sherer, John',title:'Remote Serv Admin (Surge)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'SuT',name:'Jackson, Damon',title:'Response – Phones'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'TS',name:'Johnson, Rhiianon',title:'Response – Phones'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Luu, James',title:'Response – Phones'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Lyter, Clifford',title:'Response – Phones'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Straight, Steven',title:'Response – Phones'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'SuT',name:'Araiza, Quest',title:'Response – Phones (Surge)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'SuT',name:'Roever, Troy',title:'Response – Surge'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Vogt, Sam',title:'Response – Phones'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Bryant, Stevie',title:'Sys Admin – EHR'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Boyd, Jeremiah',title:'Sys Admin – EHR'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'SuT',name:'Lanier, Jalen',title:'Sys Software Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Hartsock, Ronald',title:'Sys Hardware Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Jernigan, Tyri',title:'Sys Hardware Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'TS',name:'Wright, Eric',title:'Sys Software Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Baller, John',title:'Sys Software Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Johnson, Tyson',title:'Sys Hardware Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Perry, Darius',title:'Sys Software Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Price, Deja',title:'Sys Software Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Salierno, Thomas',title:'Sys Software Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Boue, Melanie',title:'User Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'TS',name:'Caudill, Robert',title:'User Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Joiner, Kenneth',title:'User Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'SuT',name:'Lands, Cameron',title:'User Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Michaud, Joshua',title:'User Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Thompson, Richard',title:'User Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Burdette, Brandon',title:'User Admin (Surge)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Deloof, Donald',title:'User Admin (Surge)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'McTavish, Kyle',title:'User Admin (Surge)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Lear, Darrell',title:'User XFER'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Williams, Nico',title:'User XFER'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Baker, Vivian',title:'Priority – Sys Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Helwig, Devynn',title:'Priority – S1 (M-F)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Houska, Jeffrey',title:'Priority – User Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Ingram, Rich',title:'Priority – Sys Admin'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Kriege, Matt',title:'Priority – Remote Serv'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'SuT',name:'Perry, Isis',title:'Priority – S1 (S-Th)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Thomas, Stephen',title:'Priority – S1 (M-F)'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'MF',name:'Tirado, Mike',title:'Priority – Response – Phones'},
+{group:'Shift 1 - 6:00am-2:30pm',week:'SuT',name:'Watson, Jarris',title:'Priority – Response – Phones'},
+// Shift 1.5
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'MF',name:'Coffey, Aaron',title:'Response'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'MF',name:'Lawrence, Marcus',title:'T2Response (T-Sa)'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'MF',name:'Gradford, Brittany',title:'T2Remote (M-F)'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'TS',name:'Kidd, Breanna',title:'Users (T-Sa)'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'MF',name:'Fields, Brett',title:'Sys Software Admin'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'TS',name:'Olson, David',title:'Sys Software Admin'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'TS',name:'Stevenson, William',title:'Sys Hardware Admin'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'MF',name:'Wilcox, Micah',title:'Response'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'SuT',name:'Havis, Cascadora',title:'Response (Surge)'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'TS',name:'Hilliard, Aniiyah',title:'Response (Surge)'},
+{group:'Shift 1.5 - 7:30am-4:00pm',week:'MF',name:'Vaughn, Colton',title:'Response – Phones (Surge)'},
+// Shift 2
+{group:'Shift 2 - 2:00pm-10:30pm',week:'MF',name:'Steward, Frank',title:'ET'},
+{group:'Shift 2 - 2:00pm-10:30pm',week:'SuT',name:'Axenfeld, Austin',title:'AFT'},
+{group:'Shift 2 - 2:00pm-10:30pm',week:'SuT',name:'Kelpis, Austin',title:'AFT'},
+{group:'Shift 2 - 2:00pm-10:30pm',week:'TS',name:'Daniels, Kimberly',title:'AFT'},
+{group:'Shift 2 - 2:00pm-10:30pm',week:'MF',name:'Priester, Morgan',title:'AFT – EHR'},
+{group:'Shift 2 - 2:00pm-10:30pm',week:'MF',name:'Edgington, Damien',title:'Priority – S2 (M-F)'},
+{group:'Shift 2 - 2:00pm-10:30pm',week:'SuT',name:'Boone, Sean',title:'T1 Afterhours (T-Sa)'},
+{group:'Shift 2 - 2:00pm-10:30pm',week:'SuT',name:'Paulus, Josh',title:'Priority – User Admin'},
+{group:'Shift 2 - 2:00pm-10:30pm',week:'TS',name:'Jacobs, Deandre',title:'Afterhours (T-Sa)'},
+// Shift 3
+{group:'Shift 3 - 10:00pm-6:30pm',week:'SuT',name:'Baidy, Dallas',title:'AFT'},
+{group:'Shift 3 - 10:00pm-6:30pm',week:'TS',name:'Boomhower, Alex',title:'AFT'},
+{group:'Shift 3 - 10:00pm-6:30pm',week:'TS',name:'Foresman, Jason',title:'AFT'},
+{group:'Shift 3 - 10:00pm-6:30pm',week:'SuT',name:'Sheldon, Josh',title:'AFT (9:30-6:00)'},
+{group:'Shift 3 - 10:00pm-6:30pm',week:'SuT',name:'Shultz, Cody',title:'AFT'},
+// Onboarding
+{group:'Onboarding',week:'MF',name:'Employee, New',title:'Trainee'}
+];
+
+/* ---------- group order ---------- */
+const groupOrder=[
+  'Support Team','Command & Control','Supervisors','Shift Leads',
+  'Shift 1 - 6:00am-2:30pm','Shift 1.5 - 7:30am-4:00pm',
+  'Shift 2 - 2:00pm-10:30pm','Shift 3 - 10:00pm-6:30pm','Onboarding'
+];
+
+/* ---------- helpers ---------- */
+const holidays=['2025-07-04','2025-09-01','2025-11-27','2025-12-25',' 2026-01-01', '2026-05-25', '2026-07-03', '2026-09-06', '2026-11-26', '2026-12-25'];
+const iso=d=>d.toISOString().split('T')[0];
+const parse=s=>{const[a,b,c]=s.split('-').map(Number);return new Date(a,b-1,c)};
+const range=(s,e)=>{const a=[];for(let d=new Date(s);d<=e;d.setDate(d.getDate()+1))a.push(new Date(d));return a};
+const isOff=(w,d)=>
+w==='MF'?(d.getDay()===0||d.getDay()===6): //Sat-Sun off
+w==='SuT'?d.getDay()===5 || d.getDay() === 6: //Fri & Sat Off
+w==='TS'?d.getDay()=== 0|| d.getDay() === 1: //Sun & Mon Off
+w==='TM'?d.getDay()===2||d.getDay() === 3: //Tues & Wed off
+false;
+function pick(emp,date){
+  const id=emp.name, day=iso(date), wd=date.getDay();
+  if(weekdayOverrides[id] && weekdayOverrides[id][wd]) return weekdayOverrides[id][wd];
+  if(dateOverrides[id] && dateOverrides[id][day]) return dateOverrides[id][day];
+  if(isOff(emp.week,date)) return 'OFF';
+  if(holidays.includes(day)) return 'H';
+  return 'TW';
+}
+const paint=(td,code)=>{td.style.background=bg[code];td.style.color=fg[code]};
+
+/* ---------- build ---------- */
+const wrap=document.getElementById('wrap'), sd=document.getElementById('sd'), ed=document.getElementById('ed');
+run.onclick=()=>{const s=sd.value,e=ed.value;if(!s||!e)return alert('Pick dates');
+  const start=parse(s),end=parse(e);if(end<start)return alert('End must follow start');
+  const days=range(start,end);wrap.innerHTML='';xlsx.disabled=true;
+  groupOrder.forEach(g=>{
+    const staff=employees.filter(e=>e.group===g);if(!staff.length)return;
+    wrap.insertAdjacentHTML('beforeend',`<h3>${g}</h3>`);
+    const tbl=document.createElement('table'), h=tbl.createTHead().insertRow();
+    ['Employee','Title',...days.map(d=>d.toLocaleDateString(undefined,{weekday:'short'})+'<br>'+ (d.getMonth()+1)+'/'+d.getDate())]
+      .forEach(t=>{const th=document.createElement('th');th.innerHTML=t;h.appendChild(th)});
+    const b=tbl.createTBody();
+    staff.forEach(emp=>{
+      const tr=b.insertRow();tr.insertCell().className='emp-name';tr.cells[0].textContent=emp.name;
+      tr.insertCell().className='emp-title';tr.cells[1].textContent=emp.title;
+      days.forEach(d => {
+  const td = tr.insertCell();
+  
+  // Create shift select
+  const sel = document.createElement('select');
+  sel.appendChild(new Option('', ''));
+  Object.keys(shifts).forEach(k => sel.appendChild(new Option(k, k)));
+
+  // Assign default value
+  const code = pick(emp, d);
+  sel.value = code;
+  paint(td, code);
+
+  sel.onchange = () => paint(td, sel.value);
+
+  // Create note input
+  const note = document.createElement('input');
+  note.type = 'text';
+  note.placeholder = 'Note';
+  note.style.display = 'block';
+  note.style.marginTop = '4px';
+  note.style.width = '100%';
+  note.style.fontSize = '11px';
+
+  // Append both
+  td.appendChild(sel);
+  td.appendChild(note);
+});
+    });
+    wrap.appendChild(tbl);
+  });
+  xlsx.disabled=false;
+};
+
+/* ---------- export ---------- */
+xlsx.onclick=()=>{
+  const wb=XLSX.utils.book_new();
+  wrap.querySelectorAll('table').forEach(tbl=>{
+    const rows=[[...tbl.querySelectorAll('thead th')].map(th=>th.textContent.replace(/\n/g,' '))];
+    tbl.querySelectorAll('tbody tr').forEach(r=>{
+      const row=[];r.querySelectorAll('td').forEach((c, i) => {
+  if (i < 2) {
+    row.push(c.textContent);
+  } else {
+    const shift = c.querySelector('select')?.value || '';
+    const note = c.querySelector('input')?.value || '';
+    row.push(shift + (note ? ` (${note})` : ''));
+  }
+});
+
+      rows.push(row);
+    });
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rows),tbl.previousElementSibling.textContent.slice(0,31));
+  });
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([['Code','Meaning'],...Object.entries(shifts)]),'Key_Legend');
+  XLSX.writeFile(wb,'service_desk_schedule.xlsx');
+};
+});
+</script>
+</body>
+</html>
+
+
+
+
+
